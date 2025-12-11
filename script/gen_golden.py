@@ -11,6 +11,7 @@ CANVA_WIDTH = 640
 CANVA_HEIGHT = 480
 DIS_CEMERA_CANVA = 1000
 DPI=1
+Z_SCALE = 65536.0
 COLOR = (0x4E, 0xFE, 0xB3)
 class Canva:
     z_inv_buf:np.ndarray
@@ -32,7 +33,10 @@ class Canva:
         self.z_inv_buf  = np.zeros((self.height, self.width), dtype=np.float32)
 
 def PutPixel(x:int, y:int, z_inv:float, canva:Canva, color:tuple):
-    if 1 < canva.d * z_inv:
+    # Restore real 1/z value for storage and checks
+    real_z_inv = z_inv / Z_SCALE
+
+    if 1 < canva.d * real_z_inv:
         return
     
     h, w, _ = canva.array.shape
@@ -43,11 +47,11 @@ def PutPixel(x:int, y:int, z_inv:float, canva:Canva, color:tuple):
     if x_idx < 0 or x_idx >= w or y_idx < 0 or y_idx >= h:
         return
 
-    if z_inv <= 0:
+    if real_z_inv <= 0:
         return
 
-    if(float(z_inv) > canva.z_inv_buf[y_idx][x_idx]):
-        canva.z_inv_buf[y_idx][x_idx] = float(z_inv)
+    if(float(real_z_inv) > canva.z_inv_buf[y_idx][x_idx]):
+        canva.z_inv_buf[y_idx][x_idx] = float(real_z_inv)
         clamped = np.clip(np.round(color).astype(np.int32), 0, 255)
         canva.array[y_idx][x_idx][0] = clamped[0]
         canva.array[y_idx][x_idx][1] = clamped[1]
@@ -213,26 +217,32 @@ def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32,
     if det == 0:
         return
     a_coff_for_brig = (points[1][3] - points[0][3])*(points[2][1] - points[0][1]) - (points[2][3] - points[0][3])*(points[1][1] - points[0][1])
-    a_coff_for_brig /= det
-
     b_coff_for_brig = (points[2][3] - points[0][3])*(points[1][0] - points[0][0]) - (points[1][3] - points[0][3])*(points[2][0] - points[0][0])
-    b_coff_for_brig /= det
-
     a_coff_for_z = (points[1][2] - points[0][2])*(points[2][1] - points[0][1]) - (points[2][2] - points[0][2])*(points[1][1] - points[0][1])
-    a_coff_for_z /= det
-
     b_coff_for_z = (points[2][2] - points[0][2])*(points[1][0] - points[0][0]) - (points[1][2] - points[0][2])*(points[2][0] - points[0][0])
-    b_coff_for_z /= det
 
     if fixedpoint:
-        a_coff_for_brig = Fxp(a_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
-        a_coff_for_brig.config.op_sizing = 'same'
-        b_coff_for_brig = Fxp(b_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
-        b_coff_for_brig.config.op_sizing = 'same'
-        a_coff_for_z = Fxp(a_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
-        a_coff_for_z.config.op_sizing = 'same'
-        b_coff_for_z = Fxp(b_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
-        b_coff_for_z.config.op_sizing = 'same'
+        det_fxp = Fxp(det, signed=True, n_word=n_word, n_frac=n_frac)
+        a_coff_for_brig_fxp = Fxp(a_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
+        b_coff_for_brig_fxp = Fxp(b_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
+        a_coff_for_z_fxp = Fxp(a_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
+        b_coff_for_z_fxp = Fxp(b_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
+        a_coff_for_brig_fxp.config.op_sizing = 'same'
+        b_coff_for_brig_fxp.config.op_sizing = 'same'
+        a_coff_for_z_fxp.config.op_sizing = 'same'
+        b_coff_for_z_fxp.config.op_sizing = 'same'
+        det_fxp.config.op_sizing = 'same'
+
+        a_coff_for_brig = a_coff_for_brig_fxp / det_fxp
+        b_coff_for_brig = b_coff_for_brig_fxp / det_fxp
+        a_coff_for_z = a_coff_for_z_fxp / det_fxp
+        b_coff_for_z = b_coff_for_z_fxp / det_fxp
+    else:
+        a_coff_for_brig /= det
+        b_coff_for_brig /= det
+        a_coff_for_z /= det
+        b_coff_for_z /= det
+
     for y in tqdm(range(points[0][1], points[2][1] - 1, -1)):
         if y > points[1][1]:
             # above y1
@@ -292,6 +302,7 @@ def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32,
             draw_color[1] = color[1] * b_px
             draw_color[2] = color[2] * b_px
             
+            # z_px is already scaled by Z_SCALE because the input points were scaled in main()
             if fixedpoint:
                 PutPixel(x, y, float(z_px), canva, [float(c) for c in draw_color])
             else:
@@ -335,9 +346,9 @@ def line(p0, p1, canva):
 
     for y in range(points[0][1], points[1][1]-1, -1):
         if steep:
-            PutPixel(y, x, 1/1500, canva, COLOR)
+            PutPixel(y, x, (1/1500) * Z_SCALE, canva, COLOR)
         else:
-            PutPixel(x, y, 1/1500, canva, COLOR)
+            PutPixel(x, y, (1/1500) * Z_SCALE, canva, COLOR)
         error -= deltax
         if error < 0:
             x += xstep
@@ -399,7 +410,8 @@ def main():
         y = np.random.randint(-CANVA_HEIGHT//2, CANVA_HEIGHT//2)
         z = np.float32(np.random.uniform(1000, 10000))
         brightness = np.float32(np.random.random())
-        points.append([x, y, np.float32(1.0)/z, brightness])
+        # Scale 1/z by Z_SCALE to fit into Q20.12 fixed point range
+        points.append([x, y, (np.float32(1.0)/z) * Z_SCALE, brightness])
     # fp32
     BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=False)
     img = Image.fromarray(canva.array, mode="RGB")
@@ -410,7 +422,7 @@ def main():
 
     # Q16_16
     n_word = 32
-    n_frac = 20
+    n_frac = 12
     BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=True, n_word=n_word , n_frac=n_frac)
     img = Image.fromarray(canva.array, mode="RGB")
     img.save(f"./images/Q16_16Flat.png")
