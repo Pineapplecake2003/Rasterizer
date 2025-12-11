@@ -1,4 +1,5 @@
 gen_golden:
-	./script/gen_golden.py
+	./script/gen_golden.py | tee result.log
 clean:
-	rm ./images/*.*
+	rm -rf ./images/
+	rm *.log

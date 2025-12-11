@@ -57,113 +57,6 @@ def PutPixel(x:int, y:int, z_inv:float, canva:Canva, color:tuple):
         canva.array[y_idx][x_idx][1] = clamped[1]
         canva.array[y_idx][x_idx][2] = clamped[2]
 
-def toInt(val):
-    if val > 0:
-        return math.floor(val)
-    else:
-        return math.ceil(val)
-
-def DrawFlatShadedTriangle_fp32(p0, p1, p2, canva, color):
-    points = [p0, p1, p2]
-
-    # Sort points depended on y
-    # sort to
-    #        0
-    #       /|
-    #      / |
-    #     1  |
-    #      \ |
-    #       \|
-    #        2
-    # y based
-    if(points[1][1] > points[0][1]):
-        temp = points[1]
-        points[1] = points[0]
-        points[0] = temp
-    
-    if(points[2][1] > points[0][1]):
-        temp = points[2]
-        points[2] = points[0]
-        points[0] = temp
-    
-    if(points[2][1] > points[1][1]):
-        temp = points[2]
-        points[2] = points[1]
-        points[1] = temp
-    
-    if points[0][1] != points[1][1]:
-        toP1_p = copy.deepcopy(points[0])
-        toP2_p = copy.deepcopy(points[0])
-    else:
-        toP1_p = copy.deepcopy(points[1]) # 0 ________1          1 ________0
-        toP2_p = copy.deepcopy(points[0]) #   \      /             \      /
-                                          #    \    /               \    /
-                                          #     \  /                 \  /
-                                          #      \/                   \/
-                                          #       2         or         2
-    
-    # vector [x, y]
-    toP1_v_U = np.array([points[1][0], points[1][1]], dtype=np.int32) - np.array([points[0][0], points[0][1]], dtype=np.int32)
-    toP1_v_U = toP1_v_U.astype(np.float32) / np.float32(abs(toP1_v_U[1])) if not np.isclose(toP1_v_U[1], 0.) else toP1_v_U.astype(np.float32)
-    toP2_v_U = np.array([points[2][0], points[2][1]], dtype=np.int32) - np.array([points[0][0], points[0][1]], dtype=np.int32)
-    toP2_v_U = toP2_v_U.astype(np.float32) / np.float32(abs(toP2_v_U[1])) if not np.isclose(toP2_v_U[1], 0.) else toP2_v_U.astype(np.float32)
-
-    toP1_v_D = np.array([points[2][0], points[2][1]], dtype=np.int32) - np.array([points[1][0], points[1][1]], dtype=np.int32)
-    toP1_v_D = toP1_v_D.astype(np.float32) / np.float32(abs(toP1_v_D[1])) if not np.isclose(toP1_v_D[1], 0.) else toP1_v_D.astype(np.float32)
-    toP2_v_D = np.array([points[2][0], points[2][1]], dtype=np.int32) - np.array([points[0][0], points[0][1]], dtype=np.int32)
-    toP2_v_D = toP2_v_D.astype(np.float32) / np.float32(abs(toP2_v_D[1])) if not np.isclose(toP2_v_D[1], 0.) else toP2_v_D.astype(np.float32)
-    
-    det = (points[1][0] - points[0][0]) * (points[2][1] - points[0][1]) - (points[2][0] - points[0][0]) * (points[1][1] - points[0][1])
-    if det == 0:
-        return
-    
-    a_coff_for_brig = (points[1][3] - points[0][3])*(points[2][1] - points[0][1]) - (points[2][3] - points[0][3])*(points[1][1] - points[0][1])
-    a_coff_for_brig /= det
-
-    b_coff_for_brig = (points[2][3] - points[0][3])*(points[1][0] - points[0][0]) - (points[1][3] - points[0][3])*(points[2][0] - points[0][0])
-    b_coff_for_brig /= det
-
-    a_coff_for_z = (points[1][2] - points[0][2])*(points[2][1] - points[0][1]) - (points[2][2] - points[0][2])*(points[1][1] - points[0][1])
-    a_coff_for_z /= det
-
-    b_coff_for_z = (points[2][2] - points[0][2])*(points[1][0] - points[0][0]) - (points[1][2] - points[0][2])*(points[2][0] - points[0][0])
-    b_coff_for_z /= det
-
-    while(toP1_p[1] > points[2][1]):
-        if toP1_p[0] > toP2_p[0]:
-            left_p, right_p = toP2_p, toP1_p
-        else:
-            left_p, right_p = toP1_p, toP2_p
-        
-        z_px_left = a_coff_for_z * (left_p[0] - points[0][0]) + \
-                b_coff_for_z * (left_p[1] - points[0][1]) + points[0][2]
-        z_px = z_px_left
-
-        b_px_left = a_coff_for_brig * (left_p[0] - points[0][0]) + \
-                b_coff_for_brig * (left_p[1] - points[0][1]) + points[0][3]
-        b_px = b_px_left
-        
-        for x in range(int(left_p[0]), int(right_p[0])+1):
-            draw_color = list(color)
-            draw_color[0] = color[0] * b_px
-            draw_color[1] = color[1] * b_px
-            draw_color[2] = color[2] * b_px
-            PutPixel(x, toInt(left_p[1]), z_px, canva, draw_color)
-            b_px += a_coff_for_brig
-            z_px += a_coff_for_z
-
-        if toP1_p[1] > points[1][1]:
-            # Above P1
-            #print("U")
-            toP1_v = toP1_v_U
-            toP2_v = toP2_v_U
-        else:
-            # below P1
-            #print("D")
-            toP1_v = toP1_v_D
-            toP2_v = toP2_v_D
-        toP1_p, toP2_p = (toP1_p[0] + toP1_v[0], toP1_p[1] + toP1_v[1], 0, 0), (toP2_p[0] + toP2_v[0], toP2_p[1] + toP2_v[1], 0, 0)
-
 def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32, n_frac=16):
     points = [copy.deepcopy(p0), copy.deepcopy(p1), copy.deepcopy(p2)]
     # Sort points depended on y
@@ -243,7 +136,7 @@ def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32,
         a_coff_for_z /= det
         b_coff_for_z /= det
 
-    for y in tqdm(range(points[0][1], points[2][1] - 1, -1)):
+    for y in tqdm(range(points[0][1], points[2][1] - 1, -1), ncols=80):
         if y > points[1][1]:
             # above y1
             if lx < s1x:
@@ -311,51 +204,6 @@ def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32,
             b_px += a_coff_for_brig
             z_px += a_coff_for_z
 
-
-def line(p0, p1, canva):
-    # P0
-    #   \
-    #    \
-    #     \
-    #      \
-    #       P1
-    # Draw line from P0 to P1
-    points = [copy.deepcopy(p0), copy.deepcopy(p1)]
-
-    # To prevent steep slop, if delta x > delta y, need swap
-    # If abs(dx) > abs(dy), we are "shallow" (x-major). 
-    # To iterate over y (y-major), we swap x and y.
-    steep = abs(points[1][0] - points[0][0]) > abs(points[1][1] - points[0][1])
-    if steep:
-        points[0][0], points[0][1] = points[0][1], points[0][0]
-        points[1][0], points[1][1] = points[1][1], points[1][0]
-
-    # Ensure we iterate from top (max y) to bottom (min y)
-    if points[0][1] < points[1][1]:
-        points[0], points[1] = points[1], points[0]
-    
-    deltax = abs(points[1][0] - points[0][0])
-    deltay = points[0][1] - points[1][1]
-
-    error = deltay // 2
-    print(type(error))
-
-    x = points[0][0]
-
-    xstep = 1 if points[0][0] < points[1][0] else -1
-
-    for y in range(points[0][1], points[1][1]-1, -1):
-        if steep:
-            PutPixel(y, x, (1/1500) * Z_SCALE, canva, COLOR)
-        else:
-            PutPixel(x, y, (1/1500) * Z_SCALE, canva, COLOR)
-        error -= deltax
-        if error < 0:
-            x += xstep
-            error += deltay
-
-
-
 def calculate_snr(img1_path, img2_path):
     try:
         img1 = np.array(Image.open(img1_path)).astype(np.float64)
@@ -402,41 +250,50 @@ def calculate_z_buffer_snr(z_buf1, z_buf2):
 
 def main():
     os.makedirs("./images", exist_ok=True)
+    os.makedirs("./images/fp32", exist_ok=True)
+    os.makedirs("./images/Q_format", exist_ok=True)
     canva = Canva(CANVA_WIDTH, CANVA_HEIGHT, DPI, DIS_CEMERA_CANVA)
+    test_num = 10
+    snr_img_total = 0
+    snr_z_total   = 0
 
-    points = []
-    for _ in range(3):
-        x = np.random.randint(-CANVA_WIDTH//2, CANVA_WIDTH//2)
-        y = np.random.randint(-CANVA_HEIGHT//2, CANVA_HEIGHT//2)
-        z = np.float32(np.random.uniform(1000, 10000))
-        brightness = np.float32(np.random.random())
-        # Scale 1/z by Z_SCALE to fit into Q20.12 fixed point range
-        points.append([x, y, (np.float32(1.0)/z) * Z_SCALE, brightness])
-    # fp32
-    BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=False)
-    img = Image.fromarray(canva.array, mode="RGB")
-    img.save(f"./images/fp32Flat.png")
-    z_buf_fp32 = canva.z_inv_buf.copy()
-    
-    canva.reset()
+    for i in range(test_num):
+        print(f"Test case: {i}")
+        points = []
+        for _ in range(3):
+            x = np.random.randint(-CANVA_WIDTH//2, CANVA_WIDTH//2)
+            y = np.random.randint(-CANVA_HEIGHT//2, CANVA_HEIGHT//2)
+            z = np.float32(np.random.uniform(1000, 10000))
+            brightness = np.float32(np.random.random())
+            # Scale 1/z by Z_SCALE to fit into Q20.12 fixed point range
+            points.append([x, y, (np.float32(1.0)/z) * Z_SCALE, brightness])
+        # fp32
+        BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=False)
+        img = Image.fromarray(canva.array, mode="RGB")
+        img.save(f"./images/fp32/fp32_{i}.png")
+        z_buf_fp32 = canva.z_inv_buf.copy()
 
-    # Q16_16
-    n_word = 32
-    n_frac = 12
-    BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=True, n_word=n_word , n_frac=n_frac)
-    img = Image.fromarray(canva.array, mode="RGB")
-    img.save(f"./images/Q16_16Flat.png")
-    z_buf_q16 = canva.z_inv_buf.copy()
+        canva.reset()
 
-    snr_img = calculate_snr("./images/fp32Flat.png", "./images/Q16_16Flat.png")
-    print(f"Image SNR: {snr_img} dB")
-    
-    snr_z = calculate_z_buffer_snr(z_buf_fp32, z_buf_q16)
-    print(f"Z-Buffer SNR: {snr_z} dB")
+        # Q16_16
+        n_word = 32
+        n_frac = 12
+        BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=True, n_word=n_word , n_frac=n_frac)
+        img = Image.fromarray(canva.array, mode="RGB")
+        img.save(f"./images/Q_format/Q{n_word - n_frac}_{n_frac}_{i}.png")
+        z_buf_q16 = canva.z_inv_buf.copy()
 
-    print("Saving Z-buffers to text files...")
-    np.savetxt("./images/z_buf_fp32.txt", z_buf_fp32, fmt='%.8f')
-    np.savetxt("./images/z_buf_q16.txt", z_buf_q16, fmt='%.8f')
+        canva.reset()
+        snr_img = calculate_snr(f"./images/fp32/fp32_{i}.png", f"./images/Q_format/Q{n_word - n_frac}_{n_frac}_{i}.png")
+        print(f"Image SNR: {snr_img} dB")
+        snr_img_total += snr_img
+
+        snr_z = calculate_z_buffer_snr(z_buf_fp32, z_buf_q16)
+        print(f"Z-Buffer SNR: {snr_z} dB")
+        snr_z_total += snr_z
+
+    print(f"avg img SNR: {snr_img_total / test_num} dB" )
+    print(f"avg z_buf SNR: {snr_z_total / test_num} dB" )
 
 if __name__ == "__main__":
     main()
