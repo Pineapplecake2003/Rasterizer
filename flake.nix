@@ -33,20 +33,15 @@
           pillow
           matplotlib
           (ps.buildPythonPackage rec {
-            pname = "fixedpoint";
-            version = "1.0.1";
+            pname = "fxpmath";
+            version = "0.4.9";
             format = "pyproject";
             src = ps.fetchPypi {
               inherit pname version;
-              sha256 = "48339fbb3adb47f03ab325debc3f37166d6632f92dfd29a7e200c31e4054f19e";
+              sha256 = "456a0ae8960c9de2bd7a9518bbc9d62a22ad1f3c51b8c31e4000aeaf4f898b75";
             };
-            postPatch = ''
-              mkdir -p docs/source
-              touch docs/source/long_description.rst
-              sed -i '/nose>=1.3.7/d' setup.cfg
-              sed -i '/test_suite = nose.collector/d' setup.cfg
-            '';
             nativeBuildInputs = [ ps.setuptools ps.wheel ps.build ];
+            propagatedBuildInputs = [ ps.numpy ];
           })
           ps.pip
         ]);

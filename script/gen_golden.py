@@ -4,7 +4,8 @@ import copy
 import math
 import os
 from PIL import Image
-from fixedpoint import FixedPoint
+from tqdm import tqdm
+from fxpmath import Fxp
 
 CANVA_WIDTH = 640
 CANVA_HEIGHT = 480
@@ -31,9 +32,8 @@ class Canva:
         self.z_inv_buf  = np.zeros((self.height, self.width), dtype=np.float32)
 
 def PutPixel(x:int, y:int, z_inv:float, canva:Canva, color:tuple):
-    if 1/z_inv < canva.d:
+    if 1 < canva.d * z_inv:
         return
-    
     
     h, w, _ = canva.array.shape
     
@@ -46,8 +46,8 @@ def PutPixel(x:int, y:int, z_inv:float, canva:Canva, color:tuple):
     if z_inv <= 0:
         return
 
-    if(z_inv > canva.z_inv_buf[y_idx][x_idx]):
-        canva.z_inv_buf[y_idx][x_idx] = z_inv
+    if(float(z_inv) > canva.z_inv_buf[y_idx][x_idx]):
+        canva.z_inv_buf[y_idx][x_idx] = float(z_inv)
         clamped = np.clip(np.round(color).astype(np.int32), 0, 255)
         canva.array[y_idx][x_idx][0] = clamped[0]
         canva.array[y_idx][x_idx][1] = clamped[1]
@@ -160,138 +160,234 @@ def DrawFlatShadedTriangle_fp32(p0, p1, p2, canva, color):
             toP2_v = toP2_v_D
         toP1_p, toP2_p = (toP1_p[0] + toP1_v[0], toP1_p[1] + toP1_v[1], 0, 0), (toP2_p[0] + toP2_v[0], toP2_p[1] + toP2_v[1], 0, 0)
 
-def DrawFlatShadedTriangle_Q16_16(p0:list|FixedPoint, p1:list|FixedPoint, p2:list|FixedPoint, canva:Canva, color:tuple):
-    points = [p0, p1, p2]
-
-    # Sort points depended on y (P0 top/max Y, P2 bottom/min Y)
+def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32, n_frac=16):
+    points = [copy.deepcopy(p0), copy.deepcopy(p1), copy.deepcopy(p2)]
+    # Sort points depended on y
+    # sort to
+    #        0
+    #       /|
+    #      / |
+    #     1  |
+    #      \ |
+    #       \|
+    #        2
+    # y based
     if(points[1][1] > points[0][1]): points[1], points[0] = points[0], points[1]
     if(points[2][1] > points[0][1]): points[2], points[0] = points[0], points[2]
     if(points[2][1] > points[1][1]): points[2], points[1] = points[1], points[2]
 
-    # Coordinates (Integer for Bresenham)
-    x0, y0 = int(float(points[0][0])), int(float(points[0][1]))
-    x1, y1 = int(float(points[1][0])), int(float(points[1][1]))
-    x2, y2 = int(float(points[2][0])), int(float(points[2][1]))
+    # P0 -> P1 short1
+    # P1 -> P2 short2
+    # P0 -> P2 long
+    # short1
+    s1points = [copy.deepcopy(points[0]), copy.deepcopy(points[1])]
 
-    # Calculate gradients for Z and Brightness (FixedPoint division)
-    # det = (x1-x0)(y2-y0) - (x2-x0)(y1-y0)
-    fp_x0, fp_y0 = points[0][0], points[0][1]
-    fp_x1, fp_y1 = points[1][0], points[1][1]
-    fp_x2, fp_y2 = points[2][0], points[2][1]
+    s1deltax = abs(s1points[1][0] - s1points[0][0])
+    s1deltay = s1points[0][1] - s1points[1][1]
+
+    s1err = s1deltay // 2
+    s1x = s1points[0][0]
+    s1xstep = 1 if s1points[0][0] < s1points[1][0] else -1
     
-    # Hardware optimization: Pre-calculate deltas
-    dx1 = fp_x1 - fp_x0
-    dy1 = fp_y1 - fp_y0
-    dx2 = fp_x2 - fp_x0
-    dy2 = fp_y2 - fp_y0
+    # short2
+    s2points = [copy.deepcopy(points[1]), copy.deepcopy(points[2])]
 
-    dz1 = points[1][2] - points[0][2]
-    dz2 = points[2][2] - points[0][2]
+    s2deltax = abs(s2points[1][0] - s2points[0][0])
+    s2deltay = s2points[0][1] - s2points[1][1]
 
-    db1 = points[1][3] - points[0][3]
-    db2 = points[2][3] - points[0][3]
-    
-    det = dx1 * dy2 - dx2 * dy1
-    
-    if float(det) == 0: return
+    s2err = s2deltay // 2
+    s2x = s2points[0][0]
+    s2xstep = 1 if s2points[0][0] < s2points[1][0] else -1
 
-    # Hardware optimization: Calculate inverse determinant once to replace division with multiplication
-    inv_det = 1.0 / det
+    # long
+    lpoints = [copy.deepcopy(points[0]), copy.deepcopy(points[2])]
 
-    a_coff_for_z = (dz1 * dy2 - dz2 * dy1) * inv_det
-    b_coff_for_z = (dz2 * dx1 - dz1 * dx2) * inv_det
-    
-    a_coff_for_brig = (db1 * dy2 - db2 * dy1) * inv_det
-    b_coff_for_brig = (db2 * dx1 - db1 * dx2) * inv_det
+    ldeltax = abs(lpoints[1][0] - lpoints[0][0])
+    ldeltay = lpoints[0][1] - lpoints[1][1]
 
-    # Initialize Long Edge (P0 -> P2)
-    lx, ly = x0, y0
-    ldx = abs(x2 - x0)
-    ldy = abs(y2 - y0)
-    lsx = 1 if x0 < x2 else -1
-    lsy = 1 if y0 < y2 else -1
-    lerr = ldx - ldy
+    lerr = ldeltay // 2
+    lx = lpoints[0][0]
+    lxstep = 1 if lpoints[0][0] < lpoints[1][0] else -1
 
-    # Initialize Short Edge 1 (P0 -> P1)
-    sdx1 = abs(x1 - x0)
-    sdy1 = abs(y1 - y0)
-    ssx1 = 1 if x0 < x1 else -1
-    ssy1 = 1 if y0 < y1 else -1
+    det = (points[1][0] - points[0][0]) * (points[2][1] - points[0][1]) - (points[2][0] - points[0][0]) * (points[1][1] - points[0][1])
+    if det == 0:
+        return
+    a_coff_for_brig = (points[1][3] - points[0][3])*(points[2][1] - points[0][1]) - (points[2][3] - points[0][3])*(points[1][1] - points[0][1])
+    a_coff_for_brig /= det
 
-    # Initialize Short Edge 2 (P1 -> P2)
-    sdx2 = abs(x2 - x1)
-    sdy2 = abs(y2 - y1)
-    ssx2 = 1 if x1 < x2 else -1
-    ssy2 = 1 if y1 < y2 else -1
+    b_coff_for_brig = (points[2][3] - points[0][3])*(points[1][0] - points[0][0]) - (points[1][3] - points[0][3])*(points[2][0] - points[0][0])
+    b_coff_for_brig /= det
 
-    # Initialize Current Short Edge (Start with Edge 1)
-    sx, sy_curr = x0, y0
-    sdx, sdy, ssx, ssy = sdx1, sdy1, ssx1, ssy1
-    serr = sdx - sdy
-    
-    short_target_x, short_target_y = x1, y1
-    using_second_short = False
+    a_coff_for_z = (points[1][2] - points[0][2])*(points[2][1] - points[0][1]) - (points[2][2] - points[0][2])*(points[1][1] - points[0][1])
+    a_coff_for_z /= det
 
-    # Iterate Scanlines from P0.y down to P2.y
-    for y in range(y0, y2 - 1, -1):
+    b_coff_for_z = (points[2][2] - points[0][2])*(points[1][0] - points[0][0]) - (points[1][2] - points[0][2])*(points[2][0] - points[0][0])
+    b_coff_for_z /= det
+
+    if fixedpoint:
+        a_coff_for_brig = Fxp(a_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
+        a_coff_for_brig.config.op_sizing = 'same'
+        b_coff_for_brig = Fxp(b_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
+        b_coff_for_brig.config.op_sizing = 'same'
+        a_coff_for_z = Fxp(a_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
+        a_coff_for_z.config.op_sizing = 'same'
+        b_coff_for_z = Fxp(b_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
+        b_coff_for_z.config.op_sizing = 'same'
+    for y in tqdm(range(points[0][1], points[2][1] - 1, -1)):
+        if y > points[1][1]:
+            # above y1
+            if lx < s1x:
+                left_x, right_x = lx, s1x
+            else:
+                left_x, right_x = s1x, lx
+        else: 
+            # lower than y1
+            if lx < s2x:
+                left_x, right_x = lx, s2x
+            else:
+                left_x, right_x = s2x, lx
+
+        if fixedpoint:
+            z_px_left = a_coff_for_z * Fxp(float(left_x - points[0][0]), signed=True, n_word=n_word, n_frac=n_frac) + \
+                b_coff_for_z * Fxp(float(y - points[0][1]), signed=True, n_word=n_word, n_frac=n_frac) + Fxp(float(points[0][2]), signed=True, n_word=n_word, n_frac=n_frac)
+            z_px = z_px_left
+
+            b_px_left = a_coff_for_brig * Fxp(float(left_x - points[0][0]), signed=True, n_word=n_word, n_frac=n_frac) + \
+                b_coff_for_brig * Fxp(float(y - points[0][1]), signed=True, n_word=n_word, n_frac=n_frac) + Fxp(float(points[0][3]), signed=True, n_word=n_word, n_frac=n_frac)
+            b_px = b_px_left
+        else: 
+            z_px_left = a_coff_for_z * (left_x - points[0][0]) + \
+                b_coff_for_z * (y - points[0][1]) + points[0][2]
+            z_px = z_px_left
+
+            b_px_left = a_coff_for_brig * (left_x - points[0][0]) + \
+                b_coff_for_brig * (y - points[0][1]) + points[0][3]
+            b_px = b_px_left
         
-        # Update Long Edge (lx, ly) to match y
-        while ly != y:
-            if lx == x2 and ly == y2: break
-            e2 = 2 * lerr
-            if e2 > -ldy:
-                lerr -= ldy
-                lx += lsx
-            if e2 < ldx:
-                lerr += ldx
-                ly += lsy
+        # Update edges for next scanline
+        # Long edge
+        lerr -= ldeltax
+        while lerr < 0:
+            lx += lxstep
+            lerr += ldeltay
         
-        # Switch Short Edge if needed
-        if not using_second_short and y <= y1:
-            using_second_short = True
-            sx, sy_curr = x1, y1
-            short_target_x, short_target_y = x2, y2
-            sdx, sdy, ssx, ssy = sdx2, sdy2, ssx2, ssy2
-            serr = sdx - sdy
-        
-        # Update Short Edge (sx, sy_curr) to match y
-        while sy_curr != y:
-            if sx == short_target_x and sy_curr == short_target_y: break
-            e2 = 2 * serr
-            if e2 > -sdy:
-                serr -= sdy
-                sx += ssx
-            if e2 < sdx:
-                serr += sdx
-                sy_curr += ssy
-
-        # Determine Left/Right
-        if lx < sx:
-            x_left, x_right = lx, sx
+        if y > points[1][1]:
+            # Short edge 1
+            s1err -= s1deltax
+            if s1deltay != 0:
+                while s1err < 0:
+                    s1x += s1xstep
+                    s1err += s1deltay
         else:
-            x_left, x_right = sx, lx
-            
-        # Calculate Z and Brightness at start (x_left)
-        dy_val = y - y0
-        dx_val = x_left - x0
+            # Short edge 2
+            s2err -= s2deltax
+            if s2deltay != 0:
+                while s2err < 0:
+                    s2x += s2xstep
+                    s2err += s2deltay
         
-        z_px = points[0][2] + a_coff_for_z * dx_val + b_coff_for_z * dy_val
-        b_px = points[0][3] + a_coff_for_brig * dx_val + b_coff_for_brig * dy_val
-        
-        # Draw Scanline
-        for x in range(x_left, x_right + 1):
+        for x in range(left_x, right_x+1, 1):
             draw_color = list(color)
-            b_val = float(b_px)
-            draw_color[0] *= b_val
-            draw_color[1] *= b_val
-            draw_color[2] *= b_val
+            draw_color[0] = color[0] * b_px
+            draw_color[1] = color[1] * b_px
+            draw_color[2] = color[2] * b_px
             
-            PutPixel(x, y, float(z_px), canva, draw_color)
-            
-            z_px += a_coff_for_z
+            if fixedpoint:
+                PutPixel(x, y, float(z_px), canva, [float(c) for c in draw_color])
+            else:
+                PutPixel(x, y, z_px, canva, draw_color)
+
             b_px += a_coff_for_brig
+            z_px += a_coff_for_z
 
 
+def line(p0, p1, canva):
+    # P0
+    #   \
+    #    \
+    #     \
+    #      \
+    #       P1
+    # Draw line from P0 to P1
+    points = [copy.deepcopy(p0), copy.deepcopy(p1)]
+
+    # To prevent steep slop, if delta x > delta y, need swap
+    # If abs(dx) > abs(dy), we are "shallow" (x-major). 
+    # To iterate over y (y-major), we swap x and y.
+    steep = abs(points[1][0] - points[0][0]) > abs(points[1][1] - points[0][1])
+    if steep:
+        points[0][0], points[0][1] = points[0][1], points[0][0]
+        points[1][0], points[1][1] = points[1][1], points[1][0]
+
+    # Ensure we iterate from top (max y) to bottom (min y)
+    if points[0][1] < points[1][1]:
+        points[0], points[1] = points[1], points[0]
+    
+    deltax = abs(points[1][0] - points[0][0])
+    deltay = points[0][1] - points[1][1]
+
+    error = deltay // 2
+    print(type(error))
+
+    x = points[0][0]
+
+    xstep = 1 if points[0][0] < points[1][0] else -1
+
+    for y in range(points[0][1], points[1][1]-1, -1):
+        if steep:
+            PutPixel(y, x, 1/1500, canva, COLOR)
+        else:
+            PutPixel(x, y, 1/1500, canva, COLOR)
+        error -= deltax
+        if error < 0:
+            x += xstep
+            error += deltay
+
+
+
+def calculate_snr(img1_path, img2_path):
+    try:
+        img1 = np.array(Image.open(img1_path)).astype(np.float64)
+        img2 = np.array(Image.open(img2_path)).astype(np.float64)
+    except Exception as e:
+        print(f"Error opening images: {e}")
+        return 0
+
+    if img1.shape != img2.shape:
+        print("Images have different dimensions")
+        return 0
+
+    signal_power = np.sum(img1 ** 2)
+    noise_power = np.sum((img1 - img2) ** 2)
+    
+    if noise_power == 0:
+        return float('inf')
+    
+    snr = 10 * np.log10(signal_power / noise_power)
+    return snr
+
+def calculate_z_buffer_snr(z_buf1, z_buf2):
+    if z_buf1.shape != z_buf2.shape:
+        print("Z-buffers have different dimensions")
+        return 0
+
+    # Only compare pixels that have been drawn on (z > 0) in either buffer
+    mask = (z_buf1 > 0) | (z_buf2 > 0)
+    
+    if not np.any(mask):
+        return float('inf') # Both empty
+
+    z1 = z_buf1[mask].astype(np.float64)
+    z2 = z_buf2[mask].astype(np.float64)
+
+    signal_power = np.sum(z1 ** 2)
+    noise_power = np.sum((z1 - z2) ** 2)
+    
+    if noise_power == 0:
+        return float('inf')
+    
+    snr = 10 * np.log10(signal_power / noise_power)
+    return snr
 
 def main():
     os.makedirs("./images", exist_ok=True)
@@ -303,28 +399,32 @@ def main():
         y = np.random.randint(-CANVA_HEIGHT//2, CANVA_HEIGHT//2)
         z = np.float32(np.random.uniform(1000, 10000))
         brightness = np.float32(np.random.random())
-        points.append((x, y, np.float32(1.0)/z, brightness))
+        points.append([x, y, np.float32(1.0)/z, brightness])
     # fp32
-    DrawFlatShadedTriangle_fp32(points[0], points[1], points[2], canva, COLOR)
+    BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=False)
     img = Image.fromarray(canva.array, mode="RGB")
-    img.save(f"./images/fp32.png")
+    img.save(f"./images/fp32Flat.png")
+    z_buf_fp32 = canva.z_inv_buf.copy()
+    
     canva.reset()
 
-    # fixed point Q16_16
-    fixedfloat_points = []
-    for p in points:
-        p_fp = p
-        # p_fp = [FixedPoint(float(p[i]) , signed=True, m=16, n=16) for i, _ in enumerate(p)]
-        fixedfloat_points.append(p_fp)
-    DrawFlatShadedTriangle_Q16_16(fixedfloat_points[0], fixedfloat_points[1], fixedfloat_points[2], canva, COLOR)
+    # Q16_16
+    n_word = 32
+    n_frac = 20
+    BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=True, n_word=n_word , n_frac=n_frac)
     img = Image.fromarray(canva.array, mode="RGB")
-    img.save(f"./images/Q16_16.png")
+    img.save(f"./images/Q16_16Flat.png")
+    z_buf_q16 = canva.z_inv_buf.copy()
+
+    snr_img = calculate_snr("./images/fp32Flat.png", "./images/Q16_16Flat.png")
+    print(f"Image SNR: {snr_img} dB")
+    
+    snr_z = calculate_z_buffer_snr(z_buf_fp32, z_buf_q16)
+    print(f"Z-Buffer SNR: {snr_z} dB")
+
+    print("Saving Z-buffers to text files...")
+    np.savetxt("./images/z_buf_fp32.txt", z_buf_fp32, fmt='%.8f')
+    np.savetxt("./images/z_buf_q16.txt", z_buf_q16, fmt='%.8f')
 
 if __name__ == "__main__":
     main()
-
-# TODO
-# 1. Recognize Bresenham's line algorithm
-# 2. Emlimitate # of division as more as possible
-# 3. Turn it to Fixed point float
-# 
