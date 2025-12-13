@@ -6,6 +6,7 @@ import os
 from PIL import Image
 from tqdm import tqdm
 from fxpmath import Fxp
+import struct
 
 CANVA_WIDTH = 640
 CANVA_HEIGHT = 480
@@ -113,50 +114,72 @@ def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32,
     b_coff_for_brig = (points[2][3] - points[0][3])*(points[1][0] - points[0][0]) - (points[1][3] - points[0][3])*(points[2][0] - points[0][0])
     a_coff_for_z = (points[1][2] - points[0][2])*(points[2][1] - points[0][1]) - (points[2][2] - points[0][2])*(points[1][1] - points[0][1])
     b_coff_for_z = (points[2][2] - points[0][2])*(points[1][0] - points[0][0]) - (points[1][2] - points[0][2])*(points[2][0] - points[0][0])
+    
+    a_coff_for_brig /= det
+    b_coff_for_brig /= det
+    a_coff_for_z /= det
+    b_coff_for_z /= det
+    # if fixedpoint:
+    #     det_fxp = Fxp(det, signed=True, n_word=n_word, n_frac=n_frac)
+    #     a_coff_for_brig_fxp = Fxp(a_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
+    #     b_coff_for_brig_fxp = Fxp(b_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
+    #     a_coff_for_z_fxp = Fxp(a_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
+    #     b_coff_for_z_fxp = Fxp(b_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
+    #     a_coff_for_brig_fxp.config.op_sizing = 'same'
+    #     b_coff_for_brig_fxp.config.op_sizing = 'same'
+    #     a_coff_for_z_fxp.config.op_sizing = 'same'
+    #     b_coff_for_z_fxp.config.op_sizing = 'same'
+    #     det_fxp.config.op_sizing = 'same'
+
+    #     a_coff_for_brig = a_coff_for_brig_fxp / det_fxp
+    #     b_coff_for_brig = b_coff_for_brig_fxp / det_fxp
+    #     a_coff_for_z = a_coff_for_z_fxp / det_fxp
+    #     b_coff_for_z = b_coff_for_z_fxp / det_fxp
+    # else:
+    #     a_coff_for_brig /= det
+    #     b_coff_for_brig /= det
+    #     a_coff_for_z /= det
+    #     b_coff_for_z /= det
 
     if fixedpoint:
-        det_fxp = Fxp(det, signed=True, n_word=n_word, n_frac=n_frac)
-        a_coff_for_brig_fxp = Fxp(a_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
-        b_coff_for_brig_fxp = Fxp(b_coff_for_brig, signed=True, n_word=n_word, n_frac=n_frac)
-        a_coff_for_z_fxp = Fxp(a_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
-        b_coff_for_z_fxp = Fxp(b_coff_for_z, signed=True, n_word=n_word, n_frac=n_frac)
-        a_coff_for_brig_fxp.config.op_sizing = 'same'
-        b_coff_for_brig_fxp.config.op_sizing = 'same'
-        a_coff_for_z_fxp.config.op_sizing = 'same'
-        b_coff_for_z_fxp.config.op_sizing = 'same'
-        det_fxp.config.op_sizing = 'same'
+        a_coff_for_brig = Fxp(a_coff_for_brig   , signed=True, n_word=n_word, n_frac=n_frac)
+        b_coff_for_brig = Fxp(b_coff_for_brig   , signed=True, n_word=n_word, n_frac=n_frac)
+        a_coff_for_z    = Fxp(a_coff_for_z      , signed=True, n_word=n_word, n_frac=n_frac)
+        b_coff_for_z    = Fxp(b_coff_for_z      , signed=True, n_word=n_word, n_frac=n_frac)
+        a_coff_for_brig.config.op_sizing = 'same'
+        b_coff_for_brig.config.op_sizing = 'same'
+        a_coff_for_z.config.op_sizing = 'same'
+        b_coff_for_z.config.op_sizing = 'same'
 
-        a_coff_for_brig = a_coff_for_brig_fxp / det_fxp
-        b_coff_for_brig = b_coff_for_brig_fxp / det_fxp
-        a_coff_for_z = a_coff_for_z_fxp / det_fxp
-        b_coff_for_z = b_coff_for_z_fxp / det_fxp
-    else:
-        a_coff_for_brig /= det
-        b_coff_for_brig /= det
-        a_coff_for_z /= det
-        b_coff_for_z /= det
+    # =======================================================
+    # -------------------pipeline reg------------------------
+    # =======================================================
+    serr    = s1err
+    sx      = s1x
+    sxstep  = s1xstep
+    sdeltay = s1deltay
+    sdeltax = s1deltax
 
     for y in tqdm(range(points[0][1], points[2][1] - 1, -1), ncols=80):
-        if y > points[1][1]:
-            # above y1
-            if lx < s1x:
-                left_x, right_x = lx, s1x
-            else:
-                left_x, right_x = s1x, lx
-        else: 
-            # lower than y1
-            if lx < s2x:
-                left_x, right_x = lx, s2x
-            else:
-                left_x, right_x = s2x, lx
+        if y == points[1][1]:
+            serr = s2err
+            sx = s2x
+            sxstep = s2xstep
+            sdeltay = s2deltay
+            sdeltax = s2deltax
+        
+        if lx < sx:
+            left_x, right_x = lx, sx
+        else:
+            left_x, right_x = sx, lx
 
         if fixedpoint:
-            z_px_left = a_coff_for_z * Fxp(float(left_x - points[0][0]), signed=True, n_word=n_word, n_frac=n_frac) + \
-                b_coff_for_z * Fxp(float(y - points[0][1]), signed=True, n_word=n_word, n_frac=n_frac) + Fxp(float(points[0][2]), signed=True, n_word=n_word, n_frac=n_frac)
+            z_px_left = a_coff_for_z * Fxp(left_x - points[0][0], signed=True, n_word=n_word, n_frac=n_frac) + \
+                b_coff_for_z * Fxp(y - points[0][1], signed=True, n_word=n_word, n_frac=n_frac) + Fxp(points[0][2], signed=True, n_word=n_word, n_frac=n_frac)
             z_px = z_px_left
 
-            b_px_left = a_coff_for_brig * Fxp(float(left_x - points[0][0]), signed=True, n_word=n_word, n_frac=n_frac) + \
-                b_coff_for_brig * Fxp(float(y - points[0][1]), signed=True, n_word=n_word, n_frac=n_frac) + Fxp(float(points[0][3]), signed=True, n_word=n_word, n_frac=n_frac)
+            b_px_left = a_coff_for_brig * Fxp(left_x - points[0][0], signed=True, n_word=n_word, n_frac=n_frac) + \
+                b_coff_for_brig * Fxp(y - points[0][1], signed=True, n_word=n_word, n_frac=n_frac) + Fxp(points[0][3], signed=True, n_word=n_word, n_frac=n_frac)
             b_px = b_px_left
         else: 
             z_px_left = a_coff_for_z * (left_x - points[0][0]) + \
@@ -174,20 +197,11 @@ def BresenhamFlatTriangle(p0, p1, p2, canva, color, fixedpoint=False, n_word=32,
             lx += lxstep
             lerr += ldeltay
         
-        if y > points[1][1]:
-            # Short edge 1
-            s1err -= s1deltax
-            if s1deltay != 0:
-                while s1err < 0:
-                    s1x += s1xstep
-                    s1err += s1deltay
-        else:
-            # Short edge 2
-            s2err -= s2deltax
-            if s2deltay != 0:
-                while s2err < 0:
-                    s2x += s2xstep
-                    s2err += s2deltay
+        serr -= sdeltax
+        if sdeltay != 0:
+            while serr < 0:
+                sx += sxstep
+                serr += sdeltay
         
         for x in range(left_x, right_x+1, 1):
             draw_color = list(color)
@@ -249,51 +263,75 @@ def calculate_z_buffer_snr(z_buf1, z_buf2):
     return snr
 
 def main():
-    os.makedirs("./images", exist_ok=True)
-    os.makedirs("./images/fp32", exist_ok=True)
-    os.makedirs("./images/Q_format", exist_ok=True)
+    os.makedirs("./golden", exist_ok=True)
+    # os.makedirs("./images", exist_ok=True)
+    # os.makedirs("./images/fp32", exist_ok=True)
+    # os.makedirs("./images/Q_format", exist_ok=True)
+    n_word = 32
+    n_frac = 12
     canva = Canva(CANVA_WIDTH, CANVA_HEIGHT, DPI, DIS_CEMERA_CANVA)
-    test_num = 10
-    snr_img_total = 0
-    snr_z_total   = 0
+    #    [x             , y            , 1/z               , b              ]
+    p0 = [np.int32(230 ), np.int32(120), np.float32(1/1500), np.float32(0.5)]
+    p1 = [np.int32(-300), np.int32(80 ), np.float32(1/1500), np.float32(0.9)]
+    p2 = [np.int32(150 ), np.int32(-65), np.float32(1/1500), np.float32(0.1)]
+    points = [p0, p1, p2]
+    BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=True, n_word=n_word , n_frac=n_frac)
+    img = Image.fromarray(canva.array, mode="RGB")
+    img.save(f"./golden/Q20.12.bmp")
+    z_buf = canva.z_inv_buf.copy()
+    np.savetxt("./golden/z_buf.txt", z_buf)
 
-    for i in range(test_num):
-        print(f"Test case: {i}")
-        points = []
-        for _ in range(3):
-            x = np.random.randint(-CANVA_WIDTH//2, CANVA_WIDTH//2)
-            y = np.random.randint(-CANVA_HEIGHT//2, CANVA_HEIGHT//2)
-            z = np.float32(np.random.uniform(1000, 10000))
-            brightness = np.float32(np.random.random())
-            # Scale 1/z by Z_SCALE to fit into Q20.12 fixed point range
-            points.append([x, y, (np.float32(1.0)/z) * Z_SCALE, brightness])
-        # fp32
-        BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=False)
-        img = Image.fromarray(canva.array, mode="RGB")
-        img.save(f"./images/fp32/fp32_{i}.png")
-        z_buf_fp32 = canva.z_inv_buf.copy()
+    with open("./golden/points.txt", "w") as f:
+        for p in points:
+            for idx, ele in enumerate(p):
+                if idx < 2:
+                    # 2's complement
+                    val = int(ele) & 0xFFFFFFFF
+                    f.write(f"{val:08x}\n")
+                else:
+                    res = struct.unpack('!I', struct.pack('!f', ele))[0]
+                    f.write(f"{res:08x}\n")
+    # test_num = 10
+    # snr_img_total = 0
+    # snr_z_total   = 0
 
-        canva.reset()
+    # for i in range(test_num):
+    #     print(f"Test case: {i}")
+    #     points = []
+    #     for _ in range(3):
+    #         x = np.random.randint(-CANVA_WIDTH//2, CANVA_WIDTH//2)
+    #         y = np.random.randint(-CANVA_HEIGHT//2, CANVA_HEIGHT//2)
+    #         z = np.float32(np.random.uniform(1000, 10000))
+    #         brightness = np.float32(np.random.random())
+    #         # Scale 1/z by Z_SCALE to fit into Q20.12 fixed point range
+    #         points.append([x, y, (np.float32(1.0)/z) * Z_SCALE, brightness])
+    #     # fp32
+    #     BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=False)
+    #     img = Image.fromarray(canva.array, mode="RGB")
+    #     img.save(f"./images/fp32/fp32_{i}.png")
+    #     z_buf_fp32 = canva.z_inv_buf.copy()
+# 
+    #     canva.reset()
+# 
+    #     # Q20.12
+    #     n_word = 32
+    #     n_frac = 12
+    #     BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=True, n_word=n_word , n_frac=n_frac)
+    #     img = Image.fromarray(canva.array, mode="RGB")
+    #     img.save(f"./images/Q_format/Q{n_word - n_frac}_{n_frac}_{i}.png")
+    #     z_buf_q16 = canva.z_inv_buf.copy()
+# 
+    #     canva.reset()
+    #     snr_img = calculate_snr(f"./images/fp32/fp32_{i}.png", f"./images/Q_format/Q{n_word - n_frac}_{n_frac}_{i}.png")
+    #     print(f"Image SNR: {snr_img} dB")
+    #     snr_img_total += snr_img
+# 
+    #     snr_z = calculate_z_buffer_snr(z_buf_fp32, z_buf_q16)
+    #     print(f"Z-Buffer SNR: {snr_z} dB")
+    #     snr_z_total += snr_z
 
-        # Q16_16
-        n_word = 32
-        n_frac = 12
-        BresenhamFlatTriangle(points[0], points[1], points[2], canva, COLOR, fixedpoint=True, n_word=n_word , n_frac=n_frac)
-        img = Image.fromarray(canva.array, mode="RGB")
-        img.save(f"./images/Q_format/Q{n_word - n_frac}_{n_frac}_{i}.png")
-        z_buf_q16 = canva.z_inv_buf.copy()
-
-        canva.reset()
-        snr_img = calculate_snr(f"./images/fp32/fp32_{i}.png", f"./images/Q_format/Q{n_word - n_frac}_{n_frac}_{i}.png")
-        print(f"Image SNR: {snr_img} dB")
-        snr_img_total += snr_img
-
-        snr_z = calculate_z_buffer_snr(z_buf_fp32, z_buf_q16)
-        print(f"Z-Buffer SNR: {snr_z} dB")
-        snr_z_total += snr_z
-
-    print(f"avg img SNR: {snr_img_total / test_num} dB" )
-    print(f"avg z_buf SNR: {snr_z_total / test_num} dB" )
+    # print(f"avg img SNR: {snr_img_total / test_num} dB" )
+    # print(f"avg z_buf SNR: {snr_z_total / test_num} dB" )
 
 if __name__ == "__main__":
     main()
